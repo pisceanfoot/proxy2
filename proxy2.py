@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# import binascii
 import sys
 import os
 import socket
@@ -158,10 +159,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             setattr(res, 'response_version', version_table[res.version])
 
             # support streaming
-            if (not 'Content-Length' in res.headers and 
-                res.headers.get('Cache-Control') and
-                'no-store' in res.headers.get('Cache-Control')):
-            
+            if (not 'Content-Length' in res.headers):
+                print 'streaming'
                 self.response_handler(req, req_body, res, '')
                 setattr(res, 'headers', self.filter_headers(res.headers))
                 self.relay_streaming(res)
@@ -201,19 +200,34 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             self.save_handler(req, req_body, res, res_body_plain)
 
     def relay_streaming(self, res):
+        print 'send header'
         self.wfile.write("%s %d %s\r\n" % (self.protocol_version, res.status, res.reason))
         for line in res.headers.headers:
             self.wfile.write(line)
         self.end_headers()
+        print 'end header'
+
         try:
-            while True:
-                chunk = res.read(8192)
+            i = 0;
+            while True and i < 20:
+                print i
+                i = i + 1
+                chunk = res.read(1024)
+                # print binascii.hexlify(chunk)
+                # time.sleep(1)
+
                 if not chunk:
+                    print 'not chunk'
                     break
-                self.wfile.write(chunk)
+                self.wfile.write('%X\r\n%s\r\n' %
+                             (len(chunk), chunk))
+
+            print 'flush'
+            self.wfile.write('0\r\n\r\n')
             self.wfile.flush()
         except socket.error:
             # connection closed by client
+            print 'socket error'
             pass
 
     do_HEAD = do_GET
@@ -222,7 +236,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
     def filter_headers(self, headers):
         # http://tools.ietf.org/html/rfc2616#section-13.5.1
-        hop_by_hop = ('connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade')
+        # hop_by_hop = ('connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade')
+        hop_by_hop = ()
         for k in hop_by_hop:
             del headers[k]
 
@@ -282,7 +297,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         req_header_text = "%s %s %s\n%s" % (req.command, req.path, req.request_version, req.headers)
         res_header_text = "%s %d %s\n%s" % (res.response_version, res.status, res.reason, res.headers)
 
-        print with_color(33, req_header_text)
+        print with_color(33, "==== QUERY HEADER ====\n%s\n" % req_header_text)
 
         u = urlparse.urlsplit(req.path)
         if u.query:
@@ -329,31 +344,31 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             cookies = '\n'.join(cookies)
             print with_color(31, "==== SET-COOKIE ====\n%s\n" % cookies)
 
-        if res_body is not None:
-            res_body_text = None
-            content_type = res.headers.get('Content-Type', '')
+        # if res_body is not None:
+        #     res_body_text = None
+        #     content_type = res.headers.get('Content-Type', '')
 
-            if content_type.startswith('application/json'):
-                try:
-                    json_obj = json.loads(res_body)
-                    json_str = json.dumps(json_obj, indent=2)
-                    if json_str.count('\n') < 50:
-                        res_body_text = json_str
-                    else:
-                        lines = json_str.splitlines()
-                        res_body_text = "%s\n(%d lines)" % ('\n'.join(lines[:50]), len(lines))
-                except ValueError:
-                    res_body_text = res_body
-            elif content_type.startswith('text/html'):
-                m = re.search(r'<title[^>]*>\s*([^<]+?)\s*</title>', res_body, re.I)
-                if m:
-                    h = HTMLParser()
-                    print with_color(32, "==== HTML TITLE ====\n%s\n" % h.unescape(m.group(1).decode('utf-8')))
-            elif content_type.startswith('text/') and len(res_body) < 1024:
-                res_body_text = res_body
+        #     if content_type.startswith('application/json'):
+        #         try:
+        #             json_obj = json.loads(res_body)
+        #             json_str = json.dumps(json_obj, indent=2)
+        #             if json_str.count('\n') < 50:
+        #                 res_body_text = json_str
+        #             else:
+        #                 lines = json_str.splitlines()
+        #                 res_body_text = "%s\n(%d lines)" % ('\n'.join(lines[:50]), len(lines))
+        #         except ValueError:
+        #             res_body_text = res_body
+        #     elif content_type.startswith('text/html'):
+        #         m = re.search(r'<title[^>]*>\s*([^<]+?)\s*</title>', res_body, re.I)
+        #         if m:
+        #             h = HTMLParser()
+        #             print with_color(32, "==== HTML TITLE ====\n%s\n" % h.unescape(m.group(1).decode('utf-8')))
+        #     elif content_type.startswith('text/') and len(res_body) < 1024:
+        #         res_body_text = res_body
 
-            if res_body_text:
-                print with_color(32, "==== RESPONSE BODY ====\n%s\n" % res_body_text)
+        #     if res_body_text:
+        #         print with_color(32, "==== RESPONSE BODY ====\n%s\n" % res_body_text)
 
     def request_handler(self, req, req_body):
         pass
