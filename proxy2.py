@@ -19,6 +19,7 @@ from cStringIO import StringIO
 from subprocess import Popen, PIPE
 from HTMLParser import HTMLParser
 
+BODY_READ_BUFFER_SIZE = 1024
 
 def with_color(c, s):
     return "\x1b[%dm%s\x1b[0m" % (c, s)
@@ -54,6 +55,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     def log_error(self, format, *args):
         # surpress "Request timed out: timeout('timed out',)"
         if isinstance(args[0], socket.timeout):
+            print 'time out'
             return
 
         self.log_message(format, *args)
@@ -158,76 +160,51 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             setattr(res, 'headers', res.msg)
             setattr(res, 'response_version', version_table[res.version])
 
+            self.wfile.write("%s %d %s\r\n" % (self.protocol_version, res.status, res.reason))
+            for line in res.headers.headers:
+                self.wfile.write(line)
+            self.end_headers()
+
             # support streaming
             if (not 'Content-Length' in res.headers):
-                print 'streaming'
-                self.response_handler(req, req_body, res, '')
-                setattr(res, 'headers', self.filter_headers(res.headers))
                 self.relay_streaming(res)
-                with self.lock:
-                    self.save_handler(req, req_body, res, '')
-                return
-
-            res_body = res.read()
+            else:
+                self.response_body(res)
         except Exception as e:
             if origin in self.tls.conns:
                 del self.tls.conns[origin]
             self.send_error(502)
-            return
 
-        content_encoding = res.headers.get('Content-Encoding', 'identity')
-        res_body_plain = self.decode_content_body(res_body, content_encoding)
-
-        res_body_modified = self.response_handler(req, req_body, res, res_body_plain)
-        if res_body_modified is False:
-            self.send_error(403)
-            return
-        elif res_body_modified is not None:
-            res_body_plain = res_body_modified
-            res_body = self.encode_content_body(res_body_plain, content_encoding)
-            res.headers['Content-Length'] = str(len(res_body))
-
-        setattr(res, 'headers', self.filter_headers(res.headers))
-
-        self.wfile.write("%s %d %s\r\n" % (self.protocol_version, res.status, res.reason))
-        for line in res.headers.headers:
-            self.wfile.write(line)
-        self.end_headers()
-        self.wfile.write(res_body)
-        self.wfile.flush()
-
-        with self.lock:
-            self.save_handler(req, req_body, res, res_body_plain)
 
     def relay_streaming(self, res):
-        print 'send header'
-        self.wfile.write("%s %d %s\r\n" % (self.protocol_version, res.status, res.reason))
-        for line in res.headers.headers:
-            self.wfile.write(line)
-        self.end_headers()
-        print 'end header'
-
+        isChunkEncoding = 'Transfer-Encoding' in res.headers and \
+            res.headers['Transfer-Encoding'] == 'chunked'
         try:
-            i = 0;
-            while True and i < 20:
-                print i
-                i = i + 1
-                chunk = res.read(1024)
-                # print binascii.hexlify(chunk)
-                # time.sleep(1)
-
+            while True:
+                chunk = res.read(BODY_READ_BUFFER_SIZE)
                 if not chunk:
-                    print 'not chunk'
                     break
-                self.wfile.write('%X\r\n%s\r\n' %
-                             (len(chunk), chunk))
+                
+                if isChunkEncoding:
+                    self.wfile.write('%X\r\n%s\r\n' % (len(chunk), chunk))
+                else:
+                    self.wfile.write(chunk)
 
-            print 'flush'
-            self.wfile.write('0\r\n\r\n')
+            if isChunkEncoding:
+                self.wfile.write('0\r\n\r\n')
             self.wfile.flush()
         except socket.error:
-            # connection closed by client
-            print 'socket error'
+            pass
+
+    def response_body(self, res):
+        try:
+            while True:
+                partialBody = res.read(BODY_READ_BUFFER_SIZE)
+                if not partialBody:
+                    break
+                self.wfile.write(partialBody)
+            self.wfile.flush()
+        except socket.error:
             pass
 
     do_HEAD = do_GET
